@@ -455,9 +455,9 @@ function renderList(sessions){
     const source = s.source || "Directo / Orgánico";
     return `
     <div class="row${isNew ? ' new-enter' : ''}" data-id="${s.session_id}">
-      <div class="loc"><span>${flag}</span><span class="city">${city}</span></div>
+      <div class="loc"><span>${flag}</span><span title="${source}" style="font-size:12px;">${sourceIcon(source)}</span><span class="city">${city}</span></div>
       <div class="prodcol">
-        <div class="prod">${page} <span title="${source}" style="font-size:11px;">${sourceIcon(source)}</span></div>
+        <div class="prod">${page}</div>
         <div class="urlsm">${url}</div>
       </div>
       <div class="time-badge">${fmtElapsed(s.last_seen_at)}</div>
