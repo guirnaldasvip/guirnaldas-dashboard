@@ -37,8 +37,22 @@
 
   .hero-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:center;}
   @media(max-width:600px){.hero-grid{grid-template-columns:1fr;}}
-  .chart-legend{display:flex;justify-content:center;gap:16px;font-size:12px;color:var(--muted);margin-bottom:6px;}
+  .chart-legend{display:flex;justify-content:center;align-items:center;gap:16px;font-size:12px;color:var(--muted);margin-bottom:6px;position:relative;}
   .chart-legend span{display:inline-flex;align-items:center;gap:5px;}
+
+  .cal-wrap{position:relative;}
+  .cal-btn{background:none;border:1px solid var(--line);border-radius:7px;width:24px;height:24px;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--muted);font-size:13px;}
+  .cal-btn:hover{background:#f1f3f4;}
+  .cal-menu{
+    display:none;position:absolute;top:28px;right:0;background:var(--card);border:1px solid var(--line);
+    border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:20;min-width:120px;overflow:hidden;
+  }
+  .cal-menu.open{display:block;}
+  .cal-opt{display:block;width:100%;text-align:left;background:none;border:none;padding:9px 14px;
+    font-size:12.5px;cursor:pointer;color:var(--text);}
+  .cal-opt:hover{background:#f8f9fa;}
+  .cal-opt.active{color:var(--pink);font-weight:700;background:var(--pink-soft);}
   .dot-legend{width:9px;height:9px;border-radius:50%;display:inline-block;}
 
   .rank-item{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:12.5px;}
@@ -100,9 +114,19 @@
         <div class="note">Datos reales desde Supabase — se considera "en línea" a quien mandó señal en los últimos 45s</div>
       </div>
       <div>
-        <div class="chart-legend">
+        <div class="chart-legend" id="heroLegend">
           <span><span class="dot-legend" style="background:var(--pink);"></span>Hoy</span>
           <span><span class="dot-legend" style="background:#c6cbd2;"></span>Ayer</span>
+          <div class="cal-wrap">
+            <button class="cal-btn" id="calBtn" title="Elegir rango">📅</button>
+            <div class="cal-menu" id="calMenu">
+              <button class="cal-opt active" data-hp="dia">Día (hoy vs ayer)</button>
+              <button class="cal-opt" data-hp="vivo">Vivo (últimos minutos)</button>
+              <button class="cal-opt" data-hp="hora">Última hora</button>
+              <button class="cal-opt" data-hp="mes">Mes</button>
+              <button class="cal-opt" data-hp="anio">Año</button>
+            </div>
+          </div>
         </div>
         <canvas id="hourChart" width="340" height="140" style="width:100%;height:140px;"></canvas>
       </div>
@@ -210,49 +234,165 @@ async function fetchTodayYesterdayViews(){
   return res.json();
 }
 
-function drawHourChart(rows){
-  const todayStart = startOfDay(new Date());
-  const yesterdayStart = new Date(todayStart.getTime() - 24*3600*1000);
+let heroPeriod = 'dia';
+let onlineHistory = []; // buffer en memoria para la vista "Vivo", se llena en cada tick()
+let lastDiaRows = [];   // cache de filas de hoy/ayer para no re-pedir al cambiar de pestaña
 
-  const hoy = new Array(24).fill(0);
-  const ayer = new Array(24).fill(0);
-  const seenHoy = new Set();
-  const seenAyer = new Set();
-
-  rows.forEach(r => {
-    const t = new Date(r.entered_at);
-    const h = t.getHours();
-    if(t >= todayStart){
-      const k = h + "_" + r.session_id;
-      if(!seenHoy.has(k)){ seenHoy.add(k); hoy[h]++; }
-    } else if(t >= yesterdayStart){
-      const k = h + "_" + r.session_id;
-      if(!seenAyer.has(k)){ seenAyer.add(k); ayer[h]++; }
-    }
-  });
-
-  const canvas = document.getElementById('hourChart');
+function genericLineChart(canvasId, series, opts){
+  opts = opts || {};
+  const canvas = document.getElementById(canvasId);
   const dpr = window.devicePixelRatio || 1;
   const cssW = canvas.clientWidth || 340, cssH = 140;
-  canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+  canvas.width = cssW*dpr; canvas.height = cssH*dpr;
   const ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.scale(dpr,dpr);
   ctx.clearRect(0,0,cssW,cssH);
-
-  const max = Math.max(...hoy, ...ayer, 3);
+  const max = Math.max(...series, opts.minMax || 3);
   const pad = 8;
-  function drawLine(series, color){
-    ctx.beginPath();
-    series.forEach((v,i) => {
-      const x = pad + (cssW-2*pad) * (i/23);
-      const y = cssH-pad - (v/max) * (cssH-2*pad);
-      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-    });
-    ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.lineJoin = 'round'; ctx.stroke();
+  ctx.beginPath();
+  series.forEach((v,i) => {
+    const x = pad + (cssW-2*pad) * (i/((series.length-1)||1));
+    const y = cssH-pad - (v/max) * (cssH-2*pad);
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  });
+  ctx.strokeStyle = opts.color || '#D8446E'; ctx.lineWidth = 2.2; ctx.lineJoin = 'round'; ctx.stroke();
+  if(series.length){
+    const lastV = series[series.length-1];
+    const lx = pad + (cssW-2*pad);
+    const ly = cssH-pad - (lastV/max) * (cssH-2*pad);
+    ctx.fillStyle = opts.color || '#D8446E';
+    ctx.beginPath(); ctx.arc(lx,ly,3,0,Math.PI*2); ctx.fill();
   }
-  drawLine(ayer, '#c6cbd2');
-  drawLine(hoy, '#D8446E');
 }
+
+function drawHourChart(rows){
+  lastDiaRows = rows;
+  if(heroPeriod === 'dia') renderHeroChart();
+}
+
+function setHeroLegend(mode){
+  const el = document.getElementById('heroLegend');
+  const cal = el.querySelector('.cal-wrap').outerHTML;
+  if(mode === 'compare'){
+    el.innerHTML = `
+      <span><span class="dot-legend" style="background:var(--pink);"></span>Hoy</span>
+      <span><span class="dot-legend" style="background:#c6cbd2;"></span>Ayer</span>` + cal;
+  } else {
+    el.innerHTML = `<span><span class="dot-legend" style="background:var(--pink);"></span>${mode}</span>` + cal;
+  }
+  bindCalMenu();
+}
+
+function renderHeroChart(){
+  if(heroPeriod === 'dia'){
+    const todayStart = startOfDay(new Date());
+    const yesterdayStart = new Date(todayStart.getTime() - 24*3600*1000);
+    const hoy = new Array(24).fill(0);
+    const ayer = new Array(24).fill(0);
+    const seenHoy = new Set(), seenAyer = new Set();
+    lastDiaRows.forEach(r => {
+      const t = new Date(r.entered_at);
+      const h = t.getHours();
+      if(t >= todayStart){ const k=h+'_'+r.session_id; if(!seenHoy.has(k)){seenHoy.add(k); hoy[h]++;} }
+      else if(t >= yesterdayStart){ const k=h+'_'+r.session_id; if(!seenAyer.has(k)){seenAyer.add(k); ayer[h]++;} }
+    });
+    setHeroLegend('compare');
+    // dibujar ambas series superpuestas
+    const canvas = document.getElementById('hourChart');
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || 340, cssH = 140;
+    canvas.width = cssW*dpr; canvas.height = cssH*dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1,0,0,1,0,0); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH);
+    const max = Math.max(...hoy, ...ayer, 3); const pad = 8;
+    function drawLine(series, color){
+      ctx.beginPath();
+      series.forEach((v,i) => {
+        const x = pad + (cssW-2*pad) * (i/23);
+        const y = cssH-pad - (v/max) * (cssH-2*pad);
+        if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      });
+      ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.lineJoin = 'round'; ctx.stroke();
+    }
+    drawLine(ayer, '#c6cbd2');
+    drawLine(hoy, '#D8446E');
+    return;
+  }
+
+  if(heroPeriod === 'vivo'){
+    setHeroLegend('En vivo');
+    genericLineChart('hourChart', onlineHistory.length ? onlineHistory : [0]);
+    return;
+  }
+
+  if(heroPeriod === 'hora'){
+    setHeroLegend('Última hora');
+    fetchHeroRange(60*60*1000, 12, 'min5').then(series => genericLineChart('hourChart', series));
+    return;
+  }
+  if(heroPeriod === 'mes'){
+    setHeroLegend('Últimos 30 días');
+    fetchHeroRange(30*24*3600*1000, 30, 'day').then(series => genericLineChart('hourChart', series));
+    return;
+  }
+  if(heroPeriod === 'anio'){
+    setHeroLegend('Últimos 12 meses');
+    fetchHeroRange(365*24*3600*1000, 12, 'month').then(series => genericLineChart('hourChart', series));
+    return;
+  }
+}
+
+async function fetchHeroRange(msBack, buckets, unit){
+  const since = new Date(Date.now() - msBack);
+  const url = REST + "page_views?select=session_id,entered_at&entered_at=gte." + encodeURIComponent(since.toISOString());
+  try{
+    const res = await fetch(url, { headers: HEADERS });
+    if(!res.ok) throw new Error();
+    const rows = await res.json();
+    const now = new Date();
+    const keys = [];
+    for(let i=buckets-1;i>=0;i--){
+      const d = new Date(now);
+      if(unit==='min5') d.setMinutes(d.getMinutes()-i*5,0,0);
+      else if(unit==='day') d.setDate(d.getDate()-i);
+      else d.setMonth(d.getMonth()-i);
+      keys.push(bucketKeyGeneric(d, unit));
+    }
+    const sets = {}; keys.forEach(k => sets[k] = new Set());
+    rows.forEach(r => {
+      const d = new Date(r.entered_at);
+      const k = bucketKeyGeneric(d, unit);
+      if(sets[k]) sets[k].add(r.session_id);
+    });
+    return keys.map(k => sets[k].size);
+  } catch(e){ return new Array(buckets).fill(0); }
+}
+function bucketKeyGeneric(d, unit){
+  if(unit==='min5') return d.getFullYear()+'-'+d.getMonth()+'-'+d.getDate()+'-'+d.getHours()+'-'+Math.floor(d.getMinutes()/5);
+  if(unit==='day') return d.getFullYear()+'-'+d.getMonth()+'-'+d.getDate();
+  return d.getFullYear()+'-'+d.getMonth();
+}
+
+function bindCalMenu(){
+  const btn = document.getElementById('calBtn');
+  const menu = document.getElementById('calMenu');
+  if(!btn || !menu) return;
+  btn.onclick = (e) => { e.stopPropagation(); menu.classList.toggle('open'); };
+  menu.querySelectorAll('.cal-opt').forEach(opt => {
+    opt.classList.toggle('active', opt.dataset.hp === heroPeriod);
+    opt.onclick = () => {
+      heroPeriod = opt.dataset.hp;
+      menu.classList.remove('open');
+      renderHeroChart();
+    };
+  });
+}
+document.addEventListener('click', () => {
+  const menu = document.getElementById('calMenu');
+  if(menu) menu.classList.remove('open');
+});
+bindCalMenu();
 
 function renderRanking(rows){
   const todayStart = startOfDay(new Date());
@@ -394,6 +534,9 @@ async function tick(){
   try {
     const sessions = await fetchOnlineSessions();
     renderList(sessions);
+    onlineHistory.push(sessions.length);
+    if(onlineHistory.length > 30) onlineHistory.shift();
+    if(heroPeriod === 'vivo') renderHeroChart();
     document.getElementById('liveChip').outerHTML =
       '<div class="live-chip" id="liveChip"><span class="d"></span> Actualizando en vivo</div>';
     if(trackedId !== null) renderDetail();
