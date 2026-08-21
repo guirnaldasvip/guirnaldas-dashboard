@@ -162,7 +162,8 @@
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>Actividad en vivo</h2><span style="font-size:11px;color:var(--muted);">tocá una fila para ver el recorrido</span></div>
+    <div class="card-head"><h2>Últimas visitas (hasta 100)</h2><span style="font-size:11px;color:var(--muted);">tocá una fila para ver el recorrido</span></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">🟢 en línea ahora · ⚪ ya no está navegando — se guarda en el historial aunque desaparezca de esta lista</div>
     <div class="list" id="list"></div>
   </div>
 
@@ -205,7 +206,15 @@ let trackedId = null;
 
 async function fetchOnlineSessions(){
   const since = new Date(Date.now() - ONLINE_WINDOW_SECS*1000).toISOString();
-  const url = REST + "live_sessions?select=*&last_seen_at=gte." + encodeURIComponent(since) + "&order=last_seen_at.desc";
+  const url = REST + "live_sessions?select=session_id&last_seen_at=gte." + encodeURIComponent(since);
+  const res = await fetch(url, { headers: HEADERS });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+const RECENT_LIST_LIMIT = 100;
+async function fetchRecentSessions(){
+  const url = REST + "live_sessions?select=*&order=started_at.desc&limit=" + RECENT_LIST_LIMIT;
   const res = await fetch(url, { headers: HEADERS });
   if(!res.ok) throw new Error("HTTP " + res.status);
   return res.json();
@@ -437,14 +446,14 @@ function sourceIcon(source){
 }
 
 function renderList(sessions){
-  document.getElementById('totalOnline').textContent = sessions.length;
   const list = document.getElementById('list');
 
   if(!sessions.length){
-    list.innerHTML = '<div class="empty-state">Nadie está navegando el sitio en este momento.<br>Abrí guirnaldasvip.com en otra pestaña para probar.</div>';
+    list.innerHTML = '<div class="empty-state">Todavía no hay visitas registradas.<br>Abrí guirnaldasvip.com en otra pestaña para probar.</div>';
     return;
   }
 
+  const nowMs = Date.now();
   const currentIds = new Set(sessions.map(s => s.session_id));
   list.innerHTML = sessions.map(s => {
     const isNew = !knownIds.has(s.session_id);
@@ -453,6 +462,8 @@ function renderList(sessions){
     const page = s.current_page || "Página";
     const url = s.current_url || "";
     const source = s.source || "Directo / Orgánico";
+    const isOnline = (nowMs - new Date(s.last_seen_at).getTime()) < ONLINE_WINDOW_SECS*1000;
+    const statusDot = `<span title="${isOnline ? 'en línea' : 'fuera de línea'}" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${isOnline ? 'var(--green)' : '#c6cbd2'};flex-shrink:0;"></span>`;
     return `
     <div class="row${isNew ? ' new-enter' : ''}" data-id="${s.session_id}">
       <div class="loc"><span>${flag}</span><span title="${source}" style="font-size:12px;">${sourceIcon(source)}</span><span class="city">${city}</span></div>
@@ -460,7 +471,10 @@ function renderList(sessions){
         <div class="prod">${page}</div>
         <div class="urlsm">${url}</div>
       </div>
-      <div class="time-badge">${fmtElapsed(s.last_seen_at)}</div>
+      <div style="display:flex;align-items:center;gap:5px;flex-shrink:0;">
+        ${statusDot}
+        <div class="time-badge">${fmtElapsed(s.last_seen_at)}</div>
+      </div>
       <div class="chevron">›</div>
     </div>`;
   }).join('');
@@ -532,11 +546,15 @@ async function renderDetail(){
 
 async function tick(){
   try {
-    const sessions = await fetchOnlineSessions();
-    renderList(sessions);
-    onlineHistory.push(sessions.length);
+    const onlineRows = await fetchOnlineSessions();
+    document.getElementById('totalOnline').textContent = onlineRows.length;
+    onlineHistory.push(onlineRows.length);
     if(onlineHistory.length > 30) onlineHistory.shift();
     if(heroPeriod === 'vivo') renderHeroChart();
+
+    const recent = await fetchRecentSessions();
+    renderList(recent);
+
     document.getElementById('liveChip').outerHTML =
       '<div class="live-chip" id="liveChip"><span class="d"></span> Actualizando en vivo</div>';
     if(trackedId !== null) renderDetail();
