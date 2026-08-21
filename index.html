@@ -103,6 +103,11 @@
   </div>
 
   <div class="card">
+    <div class="card-head"><h2>De dónde vienen — hoy</h2></div>
+    <div id="sources"></div>
+  </div>
+
+  <div class="card">
     <div class="card-head"><h2>Actividad en vivo</h2><span style="font-size:11px;color:var(--muted);">tocá una fila para ver el recorrido</span></div>
     <div class="list" id="list"></div>
   </div>
@@ -246,6 +251,21 @@ function renderRanking(rows){
     </div>`).join('');
 }
 
+function sourceIcon(source){
+  if(!source) return '🌐';
+  const s = source.toLowerCase();
+  if(s.indexOf('google') > -1) return '🔍';
+  if(s.indexOf('instagram') > -1) return '📷';
+  if(s.indexOf('facebook') > -1) return '📘';
+  if(s.indexOf('whatsapp') > -1) return '💬';
+  if(s.indexOf('chatgpt') > -1 || s.indexOf('claude') > -1 || s.indexOf('perplexity') > -1 || s.indexOf('bing') > -1) return '✨';
+  if(s.indexOf('tiktok') > -1) return '🎵';
+  if(s.indexOf('twitter') > -1 || s === 'x') return '✖️';
+  if(s.indexOf('mercado libre') > -1) return '🛒';
+  if(s.indexOf('directo') > -1) return '🔗';
+  return '🌐';
+}
+
 function renderList(sessions){
   document.getElementById('totalOnline').textContent = sessions.length;
   const list = document.getElementById('list');
@@ -262,11 +282,12 @@ function renderList(sessions){
     const city = s.city || "Ubicación desconocida";
     const page = s.current_page || "Página";
     const url = s.current_url || "";
+    const source = s.source || "Directo / Orgánico";
     return `
     <div class="row${isNew ? ' new-enter' : ''}" data-id="${s.session_id}">
       <div class="loc"><span>${flag}</span><span class="city">${city}</span></div>
       <div class="prodcol">
-        <div class="prod">${page}</div>
+        <div class="prod">${page} <span title="${source}" style="font-size:11px;">${sourceIcon(source)}</span></div>
         <div class="urlsm">${url}</div>
       </div>
       <div class="time-badge">${fmtElapsed(s.last_seen_at)}</div>
@@ -352,11 +373,41 @@ async function tick(){
   }
 }
 
+async function fetchTodaySources(){
+  const todayStart = startOfDay(new Date());
+  const url = REST + "live_sessions?select=source,started_at&started_at=gte." + encodeURIComponent(todayStart.toISOString());
+  const res = await fetch(url, { headers: HEADERS });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+function renderSources(rows){
+  const counts = {};
+  rows.forEach(r => {
+    const src = r.source || "Directo / Orgánico";
+    counts[src] = (counts[src] || 0) + 1;
+  });
+  const ranked = Object.entries(counts).sort((a,b) => b[1]-a[1]);
+  const el = document.getElementById('sources');
+  if(!ranked.length){
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted);">Todavía no hay visitas hoy.</div>';
+    return;
+  }
+  el.innerHTML = ranked.map(([name,count]) => `
+    <div class="rank-item">
+      <div style="font-size:15px;width:20px;text-align:center;">${sourceIcon(name)}</div>
+      <div class="rank-name">${name}</div>
+      <div class="rank-count">${count} visita${count===1?'':'s'}</div>
+    </div>`).join('');
+}
+
 async function tickStats(){
   try {
     const rows = await fetchTodayYesterdayViews();
     drawHourChart(rows);
     renderRanking(rows);
+    const sourceRows = await fetchTodaySources();
+    renderSources(sourceRows);
   } catch(err){ /* si falla, se reintenta en el próximo ciclo */ }
 }
 
