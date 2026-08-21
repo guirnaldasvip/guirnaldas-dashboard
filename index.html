@@ -48,6 +48,18 @@
   .rank-name{flex:1;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .rank-count{font-size:11.5px;color:var(--muted);flex-shrink:0;}
 
+  .period-tabs{display:flex;gap:6px;margin-bottom:14px;}
+  .period-tab{
+    border:1px solid var(--line);background:var(--card);color:var(--muted);
+    font-size:12px;font-weight:600;padding:6px 13px;border-radius:20px;cursor:pointer;
+  }
+  .period-tab.active{background:var(--pink);border-color:var(--pink);color:#fff;}
+  .history-stats{display:flex;gap:10px;margin-top:12px;}
+  .hstat{flex:1;background:#f8f9fa;border:1px solid var(--line);border-radius:10px;padding:10px 12px;text-align:center;}
+  .hstat .v{font-size:17px;font-weight:800;}
+  .hstat .k{font-size:10px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.4px;}
+  .history-note{font-size:11px;color:var(--muted);margin-top:10px;}
+
   .list{display:flex;flex-direction:column;gap:6px;}
   .row{display:flex;align-items:center;gap:14px;border:1px solid var(--line);border-left:3px solid transparent;
     border-radius:10px;padding:10px 14px;cursor:pointer;transition:background .3s,border-color .3s;}
@@ -100,6 +112,24 @@
   <div class="card">
     <div class="card-head"><h2>Productos y secciones más vistos — hoy</h2></div>
     <div id="ranking"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Historial de visitas</h2></div>
+    <div class="period-tabs" id="periodTabs">
+      <button class="period-tab active" data-period="dia">Día</button>
+      <button class="period-tab" data-period="semana">Semana</button>
+      <button class="period-tab" data-period="mes">Mes</button>
+      <button class="period-tab" data-period="anio">Año</button>
+      <button class="period-tab" data-period="max">Máximo</button>
+    </div>
+    <canvas id="historyChart" width="700" height="160" style="width:100%;height:160px;"></canvas>
+    <div class="history-stats">
+      <div class="hstat"><div class="v" id="hMax">—</div><div class="k">Pico máximo</div></div>
+      <div class="hstat"><div class="v" id="hAvg">—</div><div class="k">Promedio</div></div>
+      <div class="hstat"><div class="v" id="hMin">—</div><div class="k">Mínimo</div></div>
+    </div>
+    <div class="history-note" id="historyNote"></div>
   </div>
 
   <div class="card">
@@ -373,6 +403,119 @@ async function tick(){
   }
 }
 
+const PERIOD_CONFIG = {
+  dia:    { days: 1,   buckets: 24,  unit: 'hour',  label: 'Últimas 24 horas, por hora' },
+  semana: { days: 7,   buckets: 7,   unit: 'day',   label: 'Últimos 7 días, por día' },
+  mes:    { days: 30,  buckets: 30,  unit: 'day',   label: 'Últimos 30 días, por día' },
+  anio:   { days: 365, buckets: 12,  unit: 'month', label: 'Últimos 12 meses, por mes' },
+  max:    { days: 730, buckets: 12,  unit: 'month', label: 'Todo el historial disponible, por mes' },
+};
+let currentPeriod = 'dia';
+
+async function fetchHistoryRows(period){
+  const cfg = PERIOD_CONFIG[period];
+  const since = new Date(Date.now() - cfg.days*24*3600*1000);
+  const url = REST + "page_views?select=session_id,entered_at&entered_at=gte." + encodeURIComponent(since.toISOString());
+  const res = await fetch(url, { headers: HEADERS });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+function bucketKey(date, unit){
+  if(unit === 'hour') return date.getFullYear()+'-'+date.getMonth()+'-'+date.getDate()+'-'+date.getHours();
+  if(unit === 'day')  return date.getFullYear()+'-'+date.getMonth()+'-'+date.getDate();
+  return date.getFullYear()+'-'+date.getMonth(); // month
+}
+
+function buildBuckets(period){
+  const cfg = PERIOD_CONFIG[period];
+  const now = new Date();
+  const keys = [];
+  for(let i = cfg.buckets-1; i >= 0; i--){
+    const d = new Date(now);
+    if(cfg.unit === 'hour') d.setHours(d.getHours()-i, 0,0,0);
+    else if(cfg.unit === 'day') d.setDate(d.getDate()-i);
+    else d.setMonth(d.getMonth()-i);
+    keys.push(bucketKey(d, cfg.unit));
+  }
+  return keys;
+}
+
+function renderHistory(rows, period){
+  const cfg = PERIOD_CONFIG[period];
+  const bucketOrder = buildBuckets(period);
+  const counts = {};
+  bucketOrder.forEach(k => counts[k] = new Set());
+
+  rows.forEach(r => {
+    const d = new Date(r.entered_at);
+    const k = bucketKey(d, cfg.unit);
+    if(counts[k]) counts[k].add(r.session_id);
+  });
+
+  const series = bucketOrder.map(k => counts[k] ? counts[k].size : 0);
+
+  const canvas = document.getElementById('historyChart');
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth || 700, cssH = 160;
+  canvas.width = cssW*dpr; canvas.height = cssH*dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.scale(dpr,dpr);
+  ctx.clearRect(0,0,cssW,cssH);
+
+  const max = Math.max(...series, 1);
+  const pad = 10;
+
+  // grilla
+  ctx.strokeStyle = '#eef0f3';
+  for(let i=0;i<3;i++){
+    const y = pad + (cssH-2*pad)*(i/2);
+    ctx.beginPath(); ctx.moveTo(pad,y); ctx.lineTo(cssW-pad,y); ctx.stroke();
+  }
+
+  // área + línea
+  ctx.beginPath();
+  series.forEach((v,i) => {
+    const x = pad + (cssW-2*pad) * (i/(series.length-1 || 1));
+    const y = cssH-pad - (v/max) * (cssH-2*pad);
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  });
+  ctx.strokeStyle = '#D8446E'; ctx.lineWidth = 2.3; ctx.lineJoin = 'round'; ctx.stroke();
+
+  // punto en el pico máximo
+  const peakIdx = series.indexOf(max);
+  if(max > 0){
+    const px = pad + (cssW-2*pad) * (peakIdx/(series.length-1 || 1));
+    const py = cssH-pad - (max/max) * (cssH-2*pad);
+    ctx.fillStyle = '#c9860b';
+    ctx.beginPath(); ctx.arc(px,py,4,0,Math.PI*2); ctx.fill();
+  }
+
+  const avg = series.length ? (series.reduce((a,b)=>a+b,0)/series.length) : 0;
+  const min = series.length ? Math.min(...series) : 0;
+  document.getElementById('hMax').textContent = max;
+  document.getElementById('hAvg').textContent = avg.toFixed(1);
+  document.getElementById('hMin').textContent = min;
+  document.getElementById('historyNote').textContent = cfg.label + ' — visitantes únicos por período (no hay datos anteriores al día en que se instaló el sistema).';
+}
+
+async function updateHistory(period){
+  try {
+    const rows = await fetchHistoryRows(period);
+    renderHistory(rows, period);
+  } catch(err){ /* se reintenta en el próximo ciclo */ }
+}
+
+document.getElementById('periodTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.period-tab');
+  if(!btn) return;
+  document.querySelectorAll('.period-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentPeriod = btn.dataset.period;
+  updateHistory(currentPeriod);
+});
+
 async function fetchTodaySources(){
   const todayStart = startOfDay(new Date());
   const url = REST + "live_sessions?select=source,started_at&started_at=gte." + encodeURIComponent(todayStart.toISOString());
@@ -408,6 +551,7 @@ async function tickStats(){
     renderRanking(rows);
     const sourceRows = await fetchTodaySources();
     renderSources(sourceRows);
+    updateHistory(currentPeriod);
   } catch(err){ /* si falla, se reintenta en el próximo ciclo */ }
 }
 
