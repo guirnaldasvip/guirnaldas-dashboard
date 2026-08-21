@@ -35,6 +35,19 @@
   .hero .lbl{font-size:13px;color:var(--muted);margin-top:6px;}
   .hero .note{font-size:11px;color:var(--muted);margin-top:10px;}
 
+  .hero-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:center;}
+  @media(max-width:600px){.hero-grid{grid-template-columns:1fr;}}
+  .chart-legend{display:flex;justify-content:center;gap:16px;font-size:12px;color:var(--muted);margin-bottom:6px;}
+  .chart-legend span{display:inline-flex;align-items:center;gap:5px;}
+  .dot-legend{width:9px;height:9px;border-radius:50%;display:inline-block;}
+
+  .rank-item{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:12.5px;}
+  .rank-item:last-child{border-bottom:none;}
+  .rank-n{width:20px;height:20px;border-radius:6px;background:var(--pink-soft);color:var(--pink);
+    font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .rank-name{flex:1;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .rank-count{font-size:11.5px;color:var(--muted);flex-shrink:0;}
+
   .list{display:flex;flex-direction:column;gap:6px;}
   .row{display:flex;align-items:center;gap:14px;border:1px solid var(--line);border-left:3px solid transparent;
     border-radius:10px;padding:10px 14px;cursor:pointer;transition:background .3s,border-color .3s;}
@@ -67,10 +80,26 @@
     <div class="live-chip" id="liveChip"><span class="d"></span> Conectando…</div>
   </div>
 
-  <div class="card hero">
-    <div class="num" id="totalOnline">—</div>
-    <div class="lbl">usuarios navegando el sitio ahora mismo</div>
-    <div class="note">Datos reales desde Supabase — se considera "en línea" a quien mandó señal en los últimos 45s</div>
+  <div class="card">
+    <div class="hero-grid">
+      <div class="hero">
+        <div class="num" id="totalOnline">—</div>
+        <div class="lbl">usuarios navegando el sitio ahora mismo</div>
+        <div class="note">Datos reales desde Supabase — se considera "en línea" a quien mandó señal en los últimos 45s</div>
+      </div>
+      <div>
+        <div class="chart-legend">
+          <span><span class="dot-legend" style="background:var(--pink);"></span>Hoy</span>
+          <span><span class="dot-legend" style="background:#c6cbd2;"></span>Ayer</span>
+        </div>
+        <canvas id="hourChart" width="340" height="140" style="width:100%;height:140px;"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Productos y secciones más vistos — hoy</h2></div>
+    <div id="ranking"></div>
   </div>
 
   <div class="card">
@@ -128,6 +157,93 @@ async function fetchJourney(sessionId){
   const res = await fetch(url, { headers: HEADERS });
   if(!res.ok) throw new Error("HTTP " + res.status);
   return res.json();
+}
+
+function startOfDay(d){
+  const x = new Date(d);
+  x.setHours(0,0,0,0);
+  return x;
+}
+
+async function fetchTodayYesterdayViews(){
+  const todayStart = startOfDay(new Date());
+  const yesterdayStart = new Date(todayStart.getTime() - 24*3600*1000);
+  const url = REST + "page_views?select=session_id,page_name,entered_at&entered_at=gte." +
+    encodeURIComponent(yesterdayStart.toISOString()) + "&order=entered_at.asc";
+  const res = await fetch(url, { headers: HEADERS });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+function drawHourChart(rows){
+  const todayStart = startOfDay(new Date());
+  const yesterdayStart = new Date(todayStart.getTime() - 24*3600*1000);
+
+  const hoy = new Array(24).fill(0);
+  const ayer = new Array(24).fill(0);
+  const seenHoy = new Set();
+  const seenAyer = new Set();
+
+  rows.forEach(r => {
+    const t = new Date(r.entered_at);
+    const h = t.getHours();
+    if(t >= todayStart){
+      const k = h + "_" + r.session_id;
+      if(!seenHoy.has(k)){ seenHoy.add(k); hoy[h]++; }
+    } else if(t >= yesterdayStart){
+      const k = h + "_" + r.session_id;
+      if(!seenAyer.has(k)){ seenAyer.add(k); ayer[h]++; }
+    }
+  });
+
+  const canvas = document.getElementById('hourChart');
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth || 340, cssH = 140;
+  canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0,0,cssW,cssH);
+
+  const max = Math.max(...hoy, ...ayer, 3);
+  const pad = 8;
+  function drawLine(series, color){
+    ctx.beginPath();
+    series.forEach((v,i) => {
+      const x = pad + (cssW-2*pad) * (i/23);
+      const y = cssH-pad - (v/max) * (cssH-2*pad);
+      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    });
+    ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.lineJoin = 'round'; ctx.stroke();
+  }
+  drawLine(ayer, '#c6cbd2');
+  drawLine(hoy, '#D8446E');
+}
+
+function renderRanking(rows){
+  const todayStart = startOfDay(new Date());
+  const counts = {};
+  const seen = new Set();
+  rows.forEach(r => {
+    const t = new Date(r.entered_at);
+    if(t < todayStart) return;
+    if(r.page_name === 'Inicio') return;
+    const key = r.page_name + "|" + r.session_id;
+    if(seen.has(key)) return; // no contar la misma persona 2 veces para el mismo producto
+    seen.add(key);
+    counts[r.page_name] = (counts[r.page_name] || 0) + 1;
+  });
+  const ranked = Object.entries(counts).sort((a,b) => b[1]-a[1]).slice(0,5);
+  const el = document.getElementById('ranking');
+  if(!ranked.length){
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted);">Todavía no hay suficientes visitas hoy.</div>';
+    return;
+  }
+  el.innerHTML = ranked.map(([name,count],i) => `
+    <div class="rank-item">
+      <div class="rank-n">${i+1}</div>
+      <div class="rank-name">${name}</div>
+      <div class="rank-count">${count} visita${count===1?'':'s'}</div>
+    </div>`).join('');
 }
 
 function renderList(sessions){
@@ -236,8 +352,19 @@ async function tick(){
   }
 }
 
+async function tickStats(){
+  try {
+    const rows = await fetchTodayYesterdayViews();
+    drawHourChart(rows);
+    renderRanking(rows);
+  } catch(err){ /* si falla, se reintenta en el próximo ciclo */ }
+}
+
 tick();
+tickStats();
 setInterval(tick, 5000);
+setInterval(tickStats, 30000);
+window.addEventListener('resize', () => { tickStats(); });
 </script>
 </body>
 </html>
